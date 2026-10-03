@@ -934,6 +934,10 @@ pub mod typed {
 
 		#[serde(skip_serializing_if = "Option::is_none")]
 		pub output_config: Option<OutputConfig>,
+
+		/// Additional Anthropic Messages fields that this version does not model yet.
+		#[serde(flatten, default)]
+		pub rest: serde_json::Value,
 	}
 
 	#[derive(Clone, Serialize, Deserialize, Debug, Eq, PartialEq, Default)]
@@ -1440,6 +1444,85 @@ pub mod typed {
 mod tests {
 	use super::*;
 	use crate::types::ResponseType;
+
+	#[test]
+	fn request_round_trip_preserves_extensions_and_tool_ids() {
+		let input = serde_json::json!({
+			"model": "claude-sonnet-4-5",
+			"max_tokens": 128,
+			"messages": [
+				{"role": "user", "content": "Check the weather"},
+				{
+					"role": "assistant",
+					"content": [{
+						"type": "tool_use",
+						"id": "toolu_server_check",
+						"name": "get_weather",
+						"input": {"location": "Paris"}
+					}]
+				},
+				{
+					"role": "user",
+					"content": [{
+						"type": "tool_result",
+						"tool_use_id": "toolu_server_check",
+						"content": "sunny"
+					}]
+				}
+			],
+			"safeguards": [{
+				"type": "dangerous_tool_use",
+				"permission_mode": "auto"
+			}],
+			"future_extension": {"enabled": true}
+		});
+		let mut request: typed::Request =
+			serde_json::from_value(input.clone()).expect("valid Messages request");
+
+		request.model = "claude-backend-model".to_string();
+		let output = serde_json::to_value(request).expect("request should serialize");
+
+		assert_eq!(output["model"], "claude-backend-model");
+		assert_eq!(output["safeguards"], input["safeguards"]);
+		assert_eq!(output["future_extension"], input["future_extension"]);
+		assert_eq!(
+			output["messages"][1]["content"][0]["id"],
+			"toolu_server_check"
+		);
+		assert_eq!(
+			output["messages"][2]["content"][0]["tool_use_id"],
+			"toolu_server_check"
+		);
+	}
+
+	#[test]
+	fn response_round_trip_preserves_safeguards_and_tool_id() {
+		let input = serde_json::json!({
+			"id": "msg_safeguarded",
+			"type": "message",
+			"role": "assistant",
+			"model": "claude-sonnet-4-5",
+			"stop_reason": "tool_use",
+			"stop_sequence": null,
+			"usage": {"input_tokens": 12, "output_tokens": 8},
+			"content": [{
+				"type": "tool_use",
+				"id": "toolu_preserved",
+				"name": "deploy",
+				"input": {"environment": "production"}
+			}],
+			"safeguard_results": [{
+				"type": "dangerous_tool_use",
+				"decision": "allow"
+			}]
+		});
+		let response: Response =
+			serde_json::from_value(input.clone()).expect("valid Messages response");
+		let output = serde_json::to_value(response).expect("response should serialize");
+
+		assert_eq!(output["safeguard_results"], input["safeguard_results"]);
+		assert_eq!(output["content"][0]["id"], "toolu_preserved");
+	}
 
 	#[test]
 	fn tool_result_parts_accept_tool_reference_and_unknown_types() {

@@ -23,6 +23,8 @@ fn cap_thinking_budget_to_max_tokens(budget_tokens: u64, max_tokens: usize) -> O
 
 #[cfg(test)]
 mod tests {
+	use http_body_util::BodyExt;
+
 	use super::*;
 
 	#[test]
@@ -31,6 +33,43 @@ mod tests {
 		assert_eq!(cap_thinking_budget_to_max_tokens(1024, 1024), None);
 		assert_eq!(cap_thinking_budget_to_max_tokens(1024, 1025), Some(1024));
 		assert_eq!(cap_thinking_budget_to_max_tokens(8192, 4096), Some(4095));
+	}
+
+	#[tokio::test]
+	async fn passthrough_stream_preserves_safeguards_and_tool_id() {
+		let input = concat!(
+			"event: message_start\n",
+			"data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",",
+			"\"role\":\"assistant\",\"model\":\"claude-sonnet-4-5\",\"content\":[],",
+			"\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":5,\"output_tokens\":1}}}\n\n",
+			"event: content_block_start\n",
+			"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",",
+			"\"id\":\"toolu_preserved\",\"name\":\"deploy\",\"input\":{}}}\n\n",
+			"event: message_delta\n",
+			"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\",",
+			"\"stop_sequence\":null,\"safeguard_results\":[{\"type\":\"dangerous_tool_use\",",
+			"\"decision\":\"allow\",\"tool_use_id\":\"toolu_preserved\"}]},",
+			"\"usage\":{\"input_tokens\":5,\"output_tokens\":8}}\n\n",
+			"event: message_stop\n",
+			"data: {\"type\":\"message_stop\"}\n\n",
+		);
+
+		let output = passthrough_stream(
+			Body::from(input),
+			1024 * 1024,
+			StreamingUsageGuard::default(),
+			crate::LogContentFields::default(),
+		)
+		.collect()
+		.await
+		.expect("stream should remain readable")
+		.to_bytes();
+
+		assert_eq!(output.as_ref(), input.as_bytes());
+		let output = String::from_utf8(output.to_vec()).expect("SSE should be UTF-8");
+		assert!(output.contains(r#""safeguard_results""#));
+		assert!(output.contains(r#""tool_use_id":"toolu_preserved""#));
+		assert!(output.contains(r#""id":"toolu_preserved""#));
 	}
 }
 
@@ -524,6 +563,7 @@ pub mod from_completions {
 			metadata,
 			thinking,
 			output_config,
+			rest: Default::default(),
 		}
 	}
 

@@ -397,6 +397,20 @@ ${curlAuthorization}  -H "Content-Type: application/json" ${continuation}
 			title: 'Claude Code',
 			description: 'Connect Claude Code to agentgateway using the Anthropic Messages API.',
 			icon: 'claude',
+			steps: [
+				<>
+					Server-side auto mode requires a model backed by a native Anthropic Messages endpoint that
+					supports Anthropic&apos;s safeguards beta.
+				</>,
+				<>
+					Routes translated to OpenAI, Responses, Gemini, or Bedrock Converse do not provide
+					Anthropic safeguard verdicts.
+				</>,
+				<>
+					Run <code>/status</code> in Claude Code and confirm{' '}
+					<strong>Auto mode server: Enabled</strong>.
+				</>
+			],
 			language: 'bash',
 			code: `export ANTHROPIC_AUTH_TOKEN=${JSON.stringify(requiredApiKey)}
 export ANTHROPIC_BASE_URL=${JSON.stringify(base)}

@@ -1751,6 +1751,124 @@ async fn vertex_anthropic_messages_prepares_vertex_body() {
 }
 
 #[tokio::test]
+async fn anthropic_messages_preserve_extensions_beta_headers_and_tool_ids() {
+	use crate::http::auth::BackendInfo;
+	use crate::llm::policy::Policy;
+	use crate::test_helpers::proxymock::setup_proxy_test;
+	use crate::types::agent::BackendTarget;
+
+	let provider = AIProvider::Anthropic(anthropic::Provider {
+		model_override: Some(strng::new("claude-backend-model")),
+	});
+	let inputs = setup_proxy_test("{}").unwrap().pi;
+	let backend_info = BackendInfo {
+		target: BackendTarget::Invalid,
+		call_target: Target::from(("api.anthropic.com", 443)),
+		inputs,
+	};
+	let policy = Policy {
+		model_aliases: std::collections::HashMap::from([(
+			strng::new("client-model"),
+			strng::new("aliased-model"),
+		)]),
+		..Default::default()
+	};
+	let safeguards = json!([{
+		"type": "dangerous_tool_use",
+		"permission_mode": "auto"
+	}]);
+	let req = ::http::Request::builder()
+		.uri("/v1/messages")
+		.header(::http::header::CONTENT_TYPE, "application/json")
+		.header(
+			"anthropic-beta",
+			"dangerous-tool-use-2026-09-03,context-management-2025-06-27",
+		)
+		.header("anthropic-beta", "future-beta-2026-10-01")
+		.body(Body::from(
+			serde_json::to_vec(&json!({
+				"model": "client-model",
+				"max_tokens": 64,
+				"messages": [
+					{"role": "user", "content": "deploy"},
+					{
+						"role": "assistant",
+						"content": [{
+							"type": "tool_use",
+							"id": "toolu_preserved",
+							"name": "deploy",
+							"input": {"environment": "production"}
+						}]
+					},
+					{
+						"role": "user",
+						"content": [{
+							"type": "tool_result",
+							"tool_use_id": "toolu_preserved",
+							"content": "approved"
+						}]
+					}
+				],
+				"safeguards": safeguards,
+				"future_extension": {"enabled": true}
+			}))
+			.unwrap(),
+		))
+		.unwrap();
+
+	let RequestResult::Success {
+		request: mut forwarded,
+		llm_request,
+		upstream_route_type,
+	} = provider
+		.process_messages_request(&backend_info, Some(&policy), req, false, &mut None, None)
+		.await
+		.expect("Anthropic Messages request should process")
+	else {
+		panic!("expected forwarded request");
+	};
+	provider
+		.set_required_fields(
+			&mut forwarded,
+			upstream_route_type,
+			Some(&llm_request),
+			None,
+		)
+		.expect("Anthropic required fields should apply");
+
+	let beta_headers = forwarded
+		.headers()
+		.get_all("anthropic-beta")
+		.iter()
+		.map(|value| value.to_str().unwrap())
+		.collect::<Vec<_>>();
+	assert_eq!(
+		beta_headers,
+		vec![
+			"dangerous-tool-use-2026-09-03,context-management-2025-06-27",
+			"future-beta-2026-10-01"
+		]
+	);
+	assert_eq!(upstream_route_type, RouteType::Messages);
+	assert_eq!(llm_request.request_model, "claude-backend-model");
+
+	let forwarded_body = forwarded.collect().await.unwrap().to_bytes();
+	let forwarded_json: Value =
+		serde_json::from_slice(&forwarded_body).expect("forwarded request should be JSON");
+	assert_eq!(forwarded_json["model"], "claude-backend-model");
+	assert_eq!(forwarded_json["safeguards"], safeguards);
+	assert_eq!(forwarded_json["future_extension"], json!({"enabled": true}));
+	assert_eq!(
+		forwarded_json["messages"][1]["content"][0]["id"],
+		"toolu_preserved"
+	);
+	assert_eq!(
+		forwarded_json["messages"][2]["content"][0]["tool_use_id"],
+		"toolu_preserved"
+	);
+}
+
+#[tokio::test]
 async fn provider_model_is_set_before_llm_transformations() {
 	use crate::http::auth::BackendInfo;
 	use crate::llm::policy::Policy;
